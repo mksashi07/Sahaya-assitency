@@ -1,90 +1,74 @@
 const express = require('express');
 const cors = require('cors');
-const admin = require('firebase-admin');
-
-// Initialize Firebase Admin
-try {
-  const serviceAccount = require('./serviceAccountKey.json');
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
-  console.log("Firebase Admin Initialized Successfully");
-} catch (error) {
-  console.warn("⚠️ Warning: Could not initialize Firebase Admin. Ensure 'serviceAccountKey.json' is in the backend directory.");
-}
+const { createClient } = require('@supabase/supabase-js');
+require('dotenv').config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// In-memory Database
-let trips = [];
-let tripCounter = 1;
+// ─── SUPABASE ADMIN CLIENT ────────────────────────────────────────────────────
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SECRET_KEY
+);
 
-// Auth Middleware
+// ─── IN-MEMORY TRIP STORE ─────────────────────────────────────────────────────
+let trips = [];
+let nextId = 1;
+
+// ─── AUTH MIDDLEWARE ──────────────────────────────────────────────────────────
 const verifyToken = async (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: "Unauthorized: No token provided" });
+    return res.status(401).json({ error: 'No token provided' });
   }
-
   const token = authHeader.split(' ')[1];
   try {
-    const decodedToken = await admin.auth().verifyIdToken(token);
-    req.user = decodedToken;
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (error || !user) throw new Error('Invalid token');
+    req.user = user;
     next();
-  } catch (error) {
-    return res.status(401).json({ error: "Unauthorized: Invalid token" });
+  } catch (err) {
+    return res.status(401).json({ error: 'Unauthorized' });
   }
 };
 
-// API: Verify Auth
-app.post('/auth/verify', verifyToken, (req, res) => {
-  res.json({ message: "Authenticated", user: req.user });
-});
+// ─── ROUTES ───────────────────────────────────────────────────────────────────
 
-// API: Create Trip
+// Request a trip (Passenger)
 app.post('/trips', verifyToken, (req, res) => {
   const { pickup, drop } = req.body;
   if (!pickup || !drop) {
-    return res.status(400).json({ error: "Pickup and drop are required" });
+    return res.status(400).json({ error: 'Pickup and drop are required' });
   }
-
-  const newTrip = {
-    id: tripCounter++,
+  const trip = {
+    id: nextId++,
     pickup,
     drop,
-    status: "REQUESTED",
-    userId: req.user.uid
+    status: 'REQUESTED',
+    userId: req.user.id,
   };
-  
-  trips.push(newTrip);
-  res.status(201).json(newTrip);
+  trips.push(trip);
+  res.status(201).json(trip);
 });
 
-// API: Get All Trips
+// Get all trips
 app.get('/trips', verifyToken, (req, res) => {
   res.json(trips);
 });
 
-// API: Accept Trip
+// Accept a trip (Hamali)
 app.post('/trips/:id/accept', verifyToken, (req, res) => {
-  const tripId = parseInt(req.params.id);
-  const trip = trips.find(t => t.id === tripId);
-
-  if (!trip) {
-    return res.status(404).json({ error: "Trip not found" });
-  }
-  
-  if (trip.status === "ACCEPTED") {
-    return res.status(400).json({ error: "Trip is already accepted" });
-  }
-
-  trip.status = "ACCEPTED";
+  const trip = trips.find((t) => t.id === parseInt(req.params.id));
+  if (!trip) return res.status(404).json({ error: 'Trip not found' });
+  if (trip.status !== 'REQUESTED') return res.status(400).json({ error: 'Trip already accepted' });
+  trip.status = 'ACCEPTED';
   res.json(trip);
 });
 
+// ─── START SERVER ─────────────────────────────────────────────────────────────
 const PORT = 3000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on http://0.0.0.0:${PORT}`);
+app.listen(PORT, () => {
+  console.log(`✅ Server running on http://localhost:${PORT}`);
 });

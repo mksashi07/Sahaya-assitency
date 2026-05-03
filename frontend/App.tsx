@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, TextInput, Button, FlatList, ActivityIndicator, Alert, SafeAreaView, Platform } from 'react-native';
-import { auth } from './firebaseConfig';
-import { PhoneAuthProvider, signInWithCredential, RecaptchaVerifier } from 'firebase/auth';
-import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
+import React, { useState, useEffect } from 'react';
+import {
+  StyleSheet, Text, View, TextInput, Button, FlatList,
+  ActivityIndicator, Alert, SafeAreaView,
+} from 'react-native';
 import axios from 'axios';
+import { supabase } from './supabaseConfig';
 
 // IMPORTANT: Replace with your actual local IP address
 const BASE_URL = 'http://192.168.0.106:3000';
@@ -22,13 +23,11 @@ export default function App() {
   const [userToken, setUserToken] = useState<string | null>(null);
   const [role, setRole] = useState<Role>(null);
   const [errorMsg, setErrorMsg] = useState('');
-  
+
   // Auth State
   const [phoneNumber, setPhoneNumber] = useState('');
-  const [verificationId, setVerificationId] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
   const [otp, setOtp] = useState('');
-  const recaptchaVerifier = useRef<any>(null);
-  const webRecaptcha = useRef<any>(null);
   const [loading, setLoading] = useState(false);
 
   // Passenger State
@@ -39,7 +38,7 @@ export default function App() {
   // Hamali State
   const [availableTrips, setAvailableTrips] = useState<Trip[]>([]);
 
-  // Setup Axios interceptor
+  // Setup Axios auth header whenever token changes
   useEffect(() => {
     if (userToken) {
       axios.defaults.headers.common['Authorization'] = `Bearer ${userToken}`;
@@ -48,10 +47,12 @@ export default function App() {
     }
   }, [userToken]);
 
-  // Auth Functions
+  // ─── AUTH FUNCTIONS ───────────────────────────────────────────────────────
+
   const sendOTP = async () => {
     setErrorMsg('');
-    // 1. Phone Number Validation
+
+    // Phone Number Validation
     const isOnlyNumbersAfterPlus = /^\+[0-9]+$/.test(phoneNumber);
     if (!phoneNumber.startsWith('+') || phoneNumber.length < 12 || !isOnlyNumbersAfterPlus) {
       setErrorMsg('Enter valid phone number with country code (e.g., +91XXXXXXXXXX)');
@@ -60,24 +61,10 @@ export default function App() {
 
     try {
       setLoading(true);
-      
-      let verifier = recaptchaVerifier.current;
-      if (Platform.OS === 'web') {
-        if (!webRecaptcha.current) {
-          webRecaptcha.current = new RecaptchaVerifier(auth, 'recaptcha-container', {
-            size: 'invisible',
-          });
-        }
-        verifier = webRecaptcha.current;
-      }
-
-      const phoneProvider = new PhoneAuthProvider(auth);
-      const id = await phoneProvider.verifyPhoneNumber(
-        phoneNumber,
-        verifier
-      );
-      setVerificationId(id);
-      Alert.alert('Success', 'OTP sent successfully');
+      const { error } = await supabase.auth.signInWithOtp({ phone: phoneNumber });
+      if (error) throw error;
+      setOtpSent(true);
+      Alert.alert('Success', 'OTP sent to your phone!');
     } catch (err: any) {
       setErrorMsg(err.message);
     } finally {
@@ -89,9 +76,14 @@ export default function App() {
     setErrorMsg('');
     try {
       setLoading(true);
-      const credential = PhoneAuthProvider.credential(verificationId, otp);
-      const userCredential = await signInWithCredential(auth, credential);
-      const token = await userCredential.user.getIdToken();
+      const { data, error } = await supabase.auth.verifyOtp({
+        phone: phoneNumber,
+        token: otp,
+        type: 'sms',
+      });
+      if (error) throw error;
+      const token = data.session?.access_token;
+      if (!token) throw new Error('No session token received.');
       setUserToken(token);
     } catch (err: any) {
       setErrorMsg(err.message);
@@ -100,16 +92,18 @@ export default function App() {
     }
   };
 
-  // API Functions
+  // ─── API FUNCTIONS ────────────────────────────────────────────────────────
+
   const requestTrip = async () => {
     setErrorMsg('');
-    // 2. Empty Input Validation
+
+    // Empty Input Validation
     if (!pickup.trim() || !drop.trim()) {
       setErrorMsg('Please enter pickup and drop location');
       return;
     }
 
-    // 3. Same Pickup & Drop Validation
+    // Same Pickup & Drop Validation
     if (pickup.trim().toLowerCase() === drop.trim().toLowerCase()) {
       setErrorMsg('Pickup and drop cannot be same');
       return;
@@ -153,7 +147,7 @@ export default function App() {
     }
   };
 
-  // Hamali Auto-refresh
+  // Hamali Auto-refresh every 3 seconds
   useEffect(() => {
     let interval: any;
     if (userToken && role === 'HAMALI') {
@@ -163,21 +157,16 @@ export default function App() {
     return () => clearInterval(interval);
   }, [userToken, role]);
 
+  // ─── SCREENS ──────────────────────────────────────────────────────────────
+
   // Auth Screen
   if (!userToken) {
     return (
       <SafeAreaView style={styles.container}>
-        {Platform.OS !== 'web' && (
-          <FirebaseRecaptchaVerifierModal
-            ref={recaptchaVerifier}
-            firebaseConfig={auth.app.options}
-          />
-        )}
-        <View nativeID="recaptcha-container" />
         <Text style={styles.title}>Railway Auth</Text>
         {errorMsg ? <Text style={styles.errorText}>{errorMsg}</Text> : null}
-        
-        {!verificationId ? (
+
+        {!otpSent ? (
           <>
             <TextInput
               style={styles.input}
@@ -268,7 +257,7 @@ export default function App() {
         <Text style={styles.title}>Hamali View</Text>
         <Text style={{ marginBottom: 10, textAlign: 'center' }}>Refreshing every 3s...</Text>
         {errorMsg ? <Text style={styles.errorText}>{errorMsg}</Text> : null}
-        
+
         <FlatList
           data={availableTrips}
           keyExtractor={(item) => item.id.toString()}
@@ -339,5 +328,5 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginBottom: 10,
     backgroundColor: '#f9f9f9',
-  }
+  },
 });
